@@ -1,55 +1,64 @@
-### [Exploring the Fetched Results Controller Delegate Protocol](https://cocoacasts.com/exploring-the-fetched-results-controller-delegate-protocol/)
+### [Core Data and Concurrency](https://cocoacasts.com/core-data-and-concurrency/)
 
 #### Author: Bart Jacobs
 
-The `NSFetchedResultsController` class is pretty nice, but you probably aren't convinced yet by what you learned in the [previous tutorial](https://cocoacasts.com/managing-records-with-fetched-results-controllers/). In this tutorial, we explore the `NSFetchedResultsControllerDelegate` protocol. This protocol enables us to respond to changes in the managed object context the fetched results controller monitors. Let me show you what that means and how it works.
+Up to now, we've used a single managed object context, which we created in the `CoreDataManager` class. This works fine, but there will be times when one managed object context won't suffice.
 
-## Where We Left Off
+What happens if you access the same managed object context from different threads? What do you expect happens? What happens if you pass a managed object from a background thread to the main thread? Let's start with the basics.
 
-In the [previous tutorial](https://cocoacasts.com/managing-records-with-fetched-results-controllers/), we ran into a problem I promised we'd solve in this tutorial. Whenever the user adds a new note, the table view isn't updated with the new note. Visit [GitHub](https://github.com/bartjacobs/ManagingRecordsWithFetchedResultsControllers) to clone or download the project we created in the [previous tutorial](https://cocoacasts.com/managing-records-with-fetched-results-controllers/) and open it in Xcode.
+## Concurrency Basics
 
-```bash
-git clone https://github.com/bartjacobs/ManagingRecordsWithFetchedResultsControllers
-```
+Before we explore solutions for using Core Data in multithreaded applications, we need to know how Core Data behaves on multiple threads. The documentation is very clear about this. Core Data expects to be run on a single thread. Even though that thread doesn't have to be the main thread, Core Data was not designed to be accessed from different threads.
 
-## Monitoring a Managed Object Context
+> Core Data expects to be run on a single thread.
 
-Previously, I wrote that a fetched results controller monitors the managed object context it keeps a reference to. It does this to update the results of its fetch request. But how does it monitor the managed object context? How does the fetched results controller know when a record is added, updated, or deleted?
+The Core Data team at Apple is not naive, though. It knows that a persistence framework needs to be accessible from multiple threads. A single thread, the main thread, may be fine for many applications. More complex applications need a robust, multithreaded persistence framework.
 
-A managed object context broadcasts notifications for three types of events:
+Before I show you how Core Data can be used across multiple threads, I lay out the basic rules for accessing Core Data in a multithreaded application.
 
-- when one of its managed objects changes
-- when the managed object context is about to save its changes
-- when the managed object context has successfully saved its changes
+### Managed Objects
 
-If an object would like to be notified of these events, they can add themselves as observers for the following notifications:
+`NSManagedObject` instances should never be passed from one thread to another. If you need to pass a managed object from one thread to another, you use a managed object's `objectID` property.
 
-- `NSNotification.Name.NSManagedObjectContextObjectsDidChange`
-- `NSNotification.Name.NSManagedObjectContextWillSave`
-- `NSNotification.Name.NSManagedObjectContextDidSave`
+The `objectID` property is of type `NSManagedObjectID` and uniquely identifies a record in the persistent store. A managed object context knows what to do when you hand it an `NSManagedObjectID` instance. There are three methods you need to know about:
 
-With this in mind, the `NSFetchedResultsController` class is starting to lose some of its magic. A fetched results controller inspects the fetch request it was initialized with and it adds itself as an observer for `NSNotification.Name.NSManagedObjectContextObjectsDidChange` notifications. This gives the fetched results controller enough information to keep the collection of managed objects it manages updated and synchronized with the state of the managed object context it observes.
+- `object(with:)`
+- `existingObject(with:)`
+- `registeredObject(for:)`
 
-You probably know that a notification has a name and, optionally, a `userInfo` dictionary. Each of the notifications I listed earlier has a `userInfo` dictionary that contains three key-value pairs. The dictionary includes which managed objects have been:
+The first method, `object(with:)`, returns a managed object that corresponds to the `NSManagedObjectID` instance. If the managed object context doesn't have a managed object for that object identifier, it asks the persistent store coordinator. This method always returns a managed object.
 
-- **inserted**
-- **updated**
-- **deleted**
+Know that `object(with:)` throws an exception if no record can be found for the object identifier it receives. For example, if the application deleted the record corresponding with the object identifier, Core Data is unable to hand your application the corresponding record. The result is an exception.
 
-That is how the fetched results controller updates its collection of managed objects. The last piece of the puzzle is the `NSFetchedResultsControllerDelegate` protocol. The object that manages the fetched results controller, a view controller, for example, doesn't need to inspect the collection of managed objects the fetched results controller manages. It only needs to set itself as the delegate of the fetched results controller.
+The `existingObject(with:)` method behaves in a similar fashion. The main difference is that the method throws an error if it cannot fetch the managed object corresponding to the object identifier.
 
-Let's now take a closer look at the `NSFetchedResultsControllerDelegate` protocol. The methods of the protocol are:
+The third method, `registeredObject(for:)`, only returns a managed object if the record you're asking for is already registered with the managed object context. In other words, the return value is of type `NSManagedObject?`. The managed object context doesn't fetch the corresponding record from the persistent store if it cannot find it.
+
+The object identifier of a record is similar, but not identical, to the primary key of a database record. It uniquely identifies the record and enables your application to fetch a particular record regardless of what thread the operation is performed on.
 
 ```swift
-optional public func controller(_ controller: NSFetchedResultsController<NSFetchRequestResult>, didChange anObject: Any, at indexPath: IndexPath?, for type: NSFetchedResultsChangeType, newIndexPath: IndexPath?)
-optional public func controller(_ controller: NSFetchedResultsController<NSFetchRequestResult>, didChange sectionInfo: NSFetchedResultsSectionInfo, atSectionIndex sectionIndex: Int, for type: NSFetchedResultsChangeType)
+let objectID = managedObject.objectID
 
-optional public func controllerWillChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>)
-optional public func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>)
-
-optional public func controller(_ controller: NSFetchedResultsController<NSFetchRequestResult>, sectionIndexTitleForSectionName sectionName: String) -> String?
+DispatchQueue.main.async {
+    let managedObject = managedObjectContext?.object(with: objectID)
+    ...
+}
 ```
 
-The delegate method we are most interested in for this discussion is the first one, `controller(_:didChange:at:for:newIndexPath:)`. This method is invoked every time a managed object is inserted, updated, or deleted. How can we use this method for the **Notes** application?
+In the example, we ask a managed object context for the managed object that corresponds with `objectID`, an `NSManagedObjectID` instance. The managed object context first looks if a managed object with a corresponding object identifier is registered in the managed object context. If there isn't, the managed object is fetched or returned as a fault.
 
-**Read this article on [Cocoacasts](https://cocoacasts.com/exploring-the-fetched-results-controller-delegate-protocol/)**.
+It's important to understand that a managed object context always expects to find a record if you give it an `NSManagedObjectID` instance. That is why `object(with:)` returns an object of type `NSManagedObject`, not `NSManagedObject?`.
+
+### Managed Object Context
+
+Creating an `NSManagedObjectContext` instance is a cheap operation. You should never share managed object contexts between threads. This is a hard rule you shouldn't break. The `NSManagedObjectContext` class isn't thread safe. Plain and simple.
+
+> You should never share managed object contexts between threads. This is a hard rule you shouldn't break.
+
+### Persistent Store Coordinator
+
+Even though the `NSPersistentStoreCoordinator` class isn't thread safe either, the class knows how to lock itself if multiple managed object contexts request access, even if these managed object contexts live and operate on different threads.
+
+It's fine to use one persistent store coordinator, which is accessed by multiple managed object contexts from different threads. This makes Core Data concurrency a little bit easier ... a little bit.
+
+**Read this article on [Cocoacasts](https://cocoacasts.com/core-data-and-concurrency/)**.
