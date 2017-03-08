@@ -7,6 +7,7 @@
 //
 
 import CoreData
+import Foundation
 
 final class CoreDataManager {
 
@@ -18,6 +19,9 @@ final class CoreDataManager {
 
     init(modelName: String) {
         self.modelName = modelName
+
+        // Setup Notification Handling
+        setupNotificationHandling()
     }
 
     // MARK: - Core Data Stack
@@ -76,5 +80,42 @@ final class CoreDataManager {
         
         return persistentStoreCoordinator
     }()
+
+    // MARK: - Notification Handling
+
+    @objc func saveChanges(_ notification: NSNotification) {
+        managedObjectContext.perform {
+            do {
+                if self.managedObjectContext.hasChanges {
+                    try self.managedObjectContext.save()
+                }
+            } catch {
+                let saveError = error as NSError
+                print("Unable to Save Changes of Managed Object Context")
+                print("\(saveError), \(saveError.localizedDescription)")
+            }
+
+            self.privateManagedObjectContext.perform {
+                do {
+                    if self.privateManagedObjectContext.hasChanges {
+                        try self.privateManagedObjectContext.save()
+                    }
+                } catch {
+                    let saveError = error as NSError
+                    print("Unable to Save Changes of Private Managed Object Context")
+                    print("\(saveError), \(saveError.localizedDescription)")
+                }
+            }
+
+        }
+    }
+
+    // MARK: - Helper Methods
+
+    private func setupNotificationHandling() {
+        let notificationCenter = NotificationCenter.default
+        notificationCenter.addObserver(self, selector: #selector(CoreDataManager.saveChanges(_:)), name: Notification.Name.UIApplicationWillTerminate, object: nil)
+        notificationCenter.addObserver(self, selector: #selector(CoreDataManager.saveChanges(_:)), name: Notification.Name.UIApplicationDidEnterBackground, object: nil)
+    }
 
 }
